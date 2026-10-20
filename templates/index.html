@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PBMC Single-Cell Navigator</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-900">
+  <header class="bg-slate-900 text-white"><div class="mx-auto max-w-7xl px-4 py-5 sm:px-6">
+    <p class="text-xs font-semibold uppercase tracking-[.2em] text-cyan-300">DDLS · Single-cell RNA-seq</p>
+    <h1 class="mt-1 text-2xl font-bold sm:text-3xl">PBMC Navigator</h1>
+    <p class="mt-1 text-sm text-slate-300">Explore the supplied UMAP, gene expression, cluster markers, and quality metrics.</p>
+  </div></header>
+  <main class="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6">
+    <section class="grid gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+      <label class="block"><span class="mb-1 block text-sm font-semibold">Color map by</span>
+        <select id="color-mode" class="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"><option value="cluster">Cluster</option><option value="gene">Gene expression</option><option value="quality">Quality metric</option></select>
+      </label>
+      <label class="block"><span id="color-label" class="mb-1 block text-sm font-semibold">Gene symbol</span>
+        <input id="color-value" list="gene-options" class="w-full rounded-lg border border-slate-300 px-3 py-2" aria-label="Gene symbol or quality metric" placeholder="Type gene symbol, e.g. PPBP" autocomplete="off"><select id="quality-value" class="hidden w-full rounded-lg border border-slate-300 bg-white px-3 py-2" aria-label="Quality metric"></select><datalist id="gene-options"></datalist>
+      </label>
+      <button id="run" class="rounded-lg bg-cyan-700 px-6 py-2 font-semibold text-white hover:bg-cyan-800 focus:outline-none focus:ring-2 focus:ring-cyan-500">Run</button>
+      <div class="sm:col-span-3"><p id="status" role="status" class="text-sm text-slate-500">Loading dataset overview…</p></div>
+    </section>
+    <section class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_19rem]">
+      <div class="min-w-0 rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4">
+        <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2"><h2 class="font-semibold">Precomputed UMAP</h2><span id="plot-caption" class="text-xs text-slate-500">Each point is one cell; hover for cluster.</span></div>
+        <div id="plot" class="min-h-[420px] w-full" aria-label="UMAP plot"></div>
+      </div>
+      <aside class="space-y-5">
+        <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 class="font-semibold">Cluster navigator</h2><label class="mt-3 block text-sm">Select cluster
+            <select id="cluster" class="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2"></select></label>
+          <button id="inspect" class="mt-3 w-full rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold hover:bg-slate-50">Run cluster summary</button>
+          <p id="cluster-summary" class="mt-3 text-sm text-slate-600">Choose a cluster to view its top ranked markers and quality summary.</p>
+          <div id="markers" class="mt-3"></div>
+        </section>
+        <section class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <h2 class="font-semibold">Quality summary</h2><div id="quality" class="mt-3 text-sm text-slate-600">Loading…</div>
+        </section>
+      </aside>
+    </section>
+    <p class="text-xs text-slate-500">The display uses the existing coordinates and labels; it does not recompute clustering or UMAP. Expression colors use log-normalized values in <code>ad.X</code>.</p>
+  </main>
+<script>
+const $ = (id) => document.getElementById(id);
+const mode = $('color-mode'), value = $('color-value'), qualityValue = $('quality-value'), statusEl = $('status');
+const qualityFields = ['n_genes','total_counts','pct_mito'];
+let drawVersion = 0;
+let summaryVersion = 0;
+function updateControls() {
+  const current = mode.value;
+  value.disabled = current !== 'gene';
+  value.classList.toggle('hidden', current !== 'gene');
+  qualityValue.classList.toggle('hidden', current !== 'quality');
+  $('color-label').textContent = current === 'quality' ? 'Quality metric' : 'Gene symbol';
+  value.placeholder = 'Type gene symbol, e.g. PPBP';
+  if (current === 'quality') {
+    qualityValue.replaceChildren(...qualityFields.map(x => {const o=document.createElement('option');o.value=x;o.textContent=x;return o;}));
+  }
+}
+async function requestJSON(url) {
+  const response = await fetch(url);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.detail || `Request failed (${response.status})`);
+  return body;
+}
+function showError(error) { statusEl.textContent = error.message; statusEl.className = 'text-sm text-red-700'; }
+async function draw() {
+  const version = ++drawVersion;
+  const selectedMode = mode.value;
+  const color = selectedMode === 'cluster' ? 'cluster' : selectedMode === 'quality' ? qualityValue.value : value.value.trim();
+  const caption = selectedMode === 'cluster' ? 'Existing cluster assignments' : selectedMode === 'gene' ? `Normalized expression: ${color}` : `Quality metric: ${color}`;
+  statusEl.textContent=`Loading ${caption.toLowerCase()}…`; statusEl.className='text-sm text-slate-500';
+  if (selectedMode === 'gene' && !color) { if (version === drawVersion) showError(new Error('Enter a gene symbol before running the map.')); return; }
+  if (selectedMode === 'quality' && !qualityFields.includes(color)) { if (version === drawVersion) showError(new Error('Choose n_genes, total_counts, or pct_mito.')); return; }
+  try {
+    const data = await requestJSON(`/api/umap?color=${encodeURIComponent(color)}`);
+    if (version !== drawVersion) return;
+    await Plotly.react('plot', data.figure.data, {...data.figure.layout, autosize:true, height:520, margin:{l:35,r:15,t:25,b:35}}, {responsive:true, displaylogo:false});
+    if (version !== drawVersion) return;
+    $('plot-caption').textContent = caption;
+    const cluster = $('cluster').value;
+    const cellCount = selectedMode === 'cluster' ? data.points.filter(point => String(point.value) === cluster).length : data.points.length;
+    const message = selectedMode === 'cluster'
+      ? `Showing ${cellCount.toLocaleString()} cells in Cluster ${cluster}`
+      : selectedMode === 'gene'
+        ? `Showing ${data.points.length.toLocaleString()} cells colored by ${data.color_label || color}`
+        : `Showing ${data.points.length.toLocaleString()} cells colored by ${data.color_label || color}`;
+    statusEl.textContent = message;
+    statusEl.className='text-sm text-emerald-700';
+  } catch (error) {
+    if (version === drawVersion) {
+      $('plot-caption').textContent = `Map not updated: ${error.message}`;
+      showError(error);
+    }
+  }
+}
+function metricTable(summary) {
+  return `<div class="overflow-x-auto"><table class="w-full text-left text-xs"><thead><tr class="border-b"><th class="py-1 pr-2">Metric</th><th class="py-1 pr-2">Median</th><th class="py-1">Range</th></tr></thead><tbody>${Object.entries(summary.metrics).map(([k,v])=>`<tr class="border-b last:border-0"><td class="py-1 pr-2">${k}</td><td class="py-1 pr-2">${v.median===null?'—':Number(v.median).toFixed(1)}</td><td class="py-1">${v.min===null?'—':Number(v.min).toFixed(1)}–${v.max===null?'—':Number(v.max).toFixed(1)}</td></tr>`).join('')}</tbody></table></div>`;
+}
+async function inspectCluster() {
+  const cluster = $('cluster').value;
+  const version = ++summaryVersion;
+  $('cluster-summary').textContent=`Loading cluster ${cluster} markers and quality…`;
+  $('cluster-summary').className='mt-3 text-sm text-slate-500';
+  $('quality').textContent=`Loading cluster ${cluster} quality summary…`;
+  $('markers').replaceChildren();
+  try {
+    const [markerData, qualityData] = await Promise.all([requestJSON(`/api/markers/${encodeURIComponent(cluster)}?top_n=10`), requestJSON(`/api/quality?cluster=${encodeURIComponent(cluster)}`)]);
+    if (version !== summaryVersion || cluster !== $('cluster').value) return;
+    if (markerData.cluster !== cluster || qualityData.summaries[0]?.cluster !== cluster) throw new Error('The server returned a different cluster than requested. Please retry.');
+    $('cluster-summary').textContent = `Cluster ${cluster} · ${markerData.n_cells} cells · top ranked genes`;
+    $('cluster-summary').className='mt-3 text-sm text-slate-600';
+    const list = document.createElement('ol'); list.className='mt-2 list-decimal space-y-1 pl-5 text-sm';
+    markerData.markers.forEach(item => {const li=document.createElement('li'); li.textContent=`${item.gene}${item.log_fold_change===null?'':` (logFC ${Number(item.log_fold_change).toFixed(2)})`}`; list.append(li);});
+    $('markers').append(list);
+    $('quality').innerHTML = `<p class="mb-2 font-medium">Cluster ${cluster} · ${qualityData.summaries[0].n_cells} cells</p>${metricTable(qualityData.summaries[0])}`;
+    $('quality').dataset.cluster = cluster;
+    $('markers').dataset.cluster = cluster;
+  } catch (error) {
+    if (version !== summaryVersion || cluster !== $('cluster').value) return;
+    $('cluster-summary').textContent=`Cluster ${cluster}: ${error.message}`;
+    $('cluster-summary').className='mt-3 text-sm text-red-700';
+    $('quality').textContent=`Cluster ${cluster}: ${error.message}`;
+    $('quality').className='mt-3 text-sm text-red-700';
+  }
+}
+async function init() {
+  updateControls();
+  mode.addEventListener('change', () => { updateControls(); draw(); });
+  $('run').addEventListener('click', draw);
+  value.addEventListener('keydown', e => {if(e.key==='Enter') draw();});
+  qualityValue.addEventListener('change', draw);
+  $('cluster').addEventListener('change', async () => { await inspectCluster(); if (mode.value === 'cluster') await draw(); });
+  $('inspect').addEventListener('click', inspectCluster);
+  try {
+    const clusters = await requestJSON('/api/clusters');
+    $('cluster').replaceChildren(...clusters.clusters.map(item=>{const o=document.createElement('option');o.value=item.cluster;o.textContent=`Cluster ${item.cluster} (${item.n_cells} cells)`;return o;}));
+    await Promise.all([draw(), inspectCluster()]);
+  } catch(error) {showError(error); $('quality').textContent=error.message;}
+}
+init();
+</script>
+</body>
+</html>

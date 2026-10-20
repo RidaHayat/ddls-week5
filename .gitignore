@@ -1,0 +1,37 @@
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
+.ssh/
+credentials*
+secrets*
+
+# Local datasets and private/raw session logs (review before adding intentionally)
+data/*.h5ad
+*.jsonl
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editor / OS / generated files
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
