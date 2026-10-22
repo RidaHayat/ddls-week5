@@ -65,6 +65,24 @@ def _result_group_values(result: dict[str, Any], field: str, cluster: str):
     return None
 
 
+def _markers_are_compatible(result: Any, groups: set[str], n_genes: int) -> bool:
+    """Check that stored marker results cover every actual group and gene."""
+    if not isinstance(result, dict):
+        return False
+    for field in ("names", "scores", "pvals", "pvals_adj", "logfoldchanges"):
+        values = result.get(field)
+        fields = getattr(getattr(values, "dtype", None), "names", None)
+        if fields:
+            if not groups.issubset(fields) or len(values) != n_genes:
+                return False
+        elif isinstance(values, dict):
+            if not groups.issubset(values) or any(len(values[g]) != n_genes for g in groups):
+                return False
+        else:
+            return False
+    return True
+
+
 def _plot_data(color: str):
     ad = get_data()
     coords = np.asarray(ad.obsm["X_umap"])
@@ -157,24 +175,20 @@ def cluster_markers(cluster: str, top_n: int = Query(10, ge=1, le=50)):
         with _data_lock:
             if key not in ad.uns:
                 sc.tl.rank_genes_groups(ad, groupby="leiden", method="wilcoxon", use_raw=False, key_added=key)
-    result = ad.uns[key]
-    names = _result_group_values(result, "names", cluster)
-    if names is None:
-        raise HTTPException(500, f"Marker results are missing group '{cluster}'")
-    names = names[:top_n]
-    scores, pvals, p_adj, logfc = (
-        _result_group_values(result, field, cluster)
-        for field in ("scores", "pvals", "pvals_adj", "logfoldchanges")
-    )
-    genes = []
-    for i, name in enumerate(names):
-        genes.append({
-            "gene": str(name),
-            "score": _json_value(scores[i]) if scores is not None else None,
-            "p_value": _json_value(pvals[i]) if pvals is not None else None,
-            "adjusted_p_value": _json_value(p_adj[i]) if p_adj is not None else None,
-            "log_fold_change": _json_value(logfc[i]) if logfc is not None else None,
-        })
+    try:
+        df = sc.get.rank_genes_groups_df(ad, group=cluster, key=key).head(top_n)
+    except Exception as exc:
+        raise HTTPException(500, f"Could not read marker results for group '{cluster}': {exc}")
+    genes = [
+        {
+            "gene": str(row["names"]),
+            "score": _json_value(row.get("scores")),
+            "p_value": _json_value(row.get("pvals")),
+            "adjusted_p_value": _json_value(row.get("pvals_adj")),
+            "log_fold_change": _json_value(row.get("logfoldchanges")),
+        }
+        for row in df.to_dict("records")
+    ]
     return {"cluster": cluster, "n_cells": int((labels == cluster).sum()), "top_n": top_n, "markers": genes}
 
 
