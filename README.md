@@ -1,5 +1,8 @@
 # PBMC Single-Cell Navigator — DDLS Week 5
 
+**Live app:** https://ddls-week5-pbmc-navigator.onrender.com
+(Free hosting: the first load after a period of inactivity can take about a minute while the server wakes up.)
+
 A small FastAPI and Plotly web app for interactively exploring the supplied PBMC single-cell RNA-seq dataset. It uses the dataset's existing Leiden cluster labels and precomputed UMAP coordinates; it does **not** recompute the clustering or embedding.
 
 ## The owner's question and recommendation
@@ -11,13 +14,15 @@ Dr. Ravi Menon was concerned that Cluster 6, a small group with low gene counts,
 - Interactive view of the supplied UMAP coordinates, with color by existing cluster, arbitrary gene expression, or supported QC metric.
 - Gene coloring uses normalized expression in `ad.X`.
 - Quality coloring is restricted in the interface to `n_genes`, `total_counts`, and `pct_mito`.
-- Cluster picker and **Run cluster summary** control show ranked marker genes and cluster-level QC summaries.
+- Cluster picker and **Run cluster summary** control show precomputed ranked marker genes and cluster-level QC summaries.
 - Loading/status feedback and clear invalid-gene or invalid-cluster errors; when a map request fails, the previous valid map remains, with a caption that says it was not updated.
 - Responsive Tailwind layout; Tailwind and Plotly.js are loaded from CDNs, so a browser connection is needed for those assets.
 
 ## Dataset
 
 `data/pbmc3k.h5ad` is a processed AnnData object containing **2,700 cells × 13,714 genes**. The dataset notes describe human peripheral blood mononuclear cells (PBMCs). The file already contains eight Leiden clusters and UMAP coordinates.
+
+The dataset is included in this repository (stored with Git LFS), so the deployed app and a fresh clone both have the data. To use another dataset, set `PBMC_DATA` to its `.h5ad` path.
 
 | AnnData field | Meaning in this project |
 |---|---|
@@ -37,16 +42,19 @@ No clustering or UMAP is recomputed by the app or analysis script, and the sourc
 | `templates/index.html` | Responsive navigator interface and client-side JavaScript. |
 | `static/` | Static asset directory (currently contains a `.keep` placeholder). |
 | `analyze_pbmc.py` | Reproducible cluster marker, QC, and Cluster 6 raw-count marker summaries. |
+| `generate_markers.py` | Computes the Wilcoxon marker rankings once and saves them to `data/markers.json`. |
+| `data/pbmc3k.h5ad` | The PBMC AnnData dataset (stored with Git LFS). |
+| `data/markers.json` | Precomputed top-50 marker genes per cluster, served by `/api/markers/{cluster}`. |
 | `data/ABOUT_THIS_FILE.txt` | Supplied dataset guide and field descriptions. |
 | `ddls-week5-interview.md` | Available interview transcript with the data owner. |
 | `AGENTS.md`, `spec.md` | Analysis brief and specification used to guide the investigation. |
 | `requirements.txt` | Python runtime dependencies. |
 
-The supplied `data/pbmc3k.h5ad` dataset is not included in this repository; obtain it through the course-provided source and place it at that path (or set `PBMC_DATA` to its location). Generated environment directories, caches, logs, and credentials should not be committed. The `.gitignore` excludes these common local files and the dataset.
+Generated environment directories, caches, logs, and credentials should not be committed. The `.gitignore` excludes these common local files.
 
 ## Requirements and installation
 
-Python 3.9 or newer is recommended. Dependencies declared in `requirements.txt` are FastAPI, Uvicorn (with standard extras), Scanpy, Plotly, and NumPy; Scanpy brings its scientific Python dependencies. No Node/npm build step is needed.
+Python 3.9 or newer is recommended (the Render deployment uses Python 3.11.9). Dependencies declared in `requirements.txt` are FastAPI, Uvicorn (with standard extras), Scanpy, Plotly, and NumPy; Scanpy brings its scientific Python dependencies. No Node/npm build step is needed.
 
 From the repository root:
 
@@ -57,7 +65,9 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-On Windows PowerShell, activate with `.venv\\Scripts\\Activate.ps1` instead of the `source` command.
+On Windows PowerShell, activate with `.venv\Scripts\Activate.ps1` instead of the `source` command.
+
+If you cloned the repository, make sure Git LFS is installed (`git lfs install`) so the dataset file downloads as the real `.h5ad` file rather than a small pointer file.
 
 ## Run the app
 
@@ -70,12 +80,22 @@ uvicorn app:app --host 127.0.0.1 --port 8001
 
 Open <http://127.0.0.1:8001>. FastAPI's interactive API docs are at <http://127.0.0.1:8001/docs>. To use another dataset path, set `PBMC_DATA` to its `.h5ad` path before starting Uvicorn. The default is `data/pbmc3k.h5ad`.
 
+## Deployment (Render)
+
+The app is deployed as a Render Web Service connected to this GitHub repository:
+
+- Build command: `pip install -r requirements.txt`
+- Start command: `uvicorn app:app --host 0.0.0.0 --port $PORT`
+- Environment variable: `PYTHON_VERSION=3.11.9`
+
+Marker rankings are precomputed and stored in `data/markers.json` rather than calculated on the server. This keeps the free-tier instance within its memory limit and avoids differences in how Scanpy versions store ranking results.
+
 ## How to use the navigator
 
 1. Select **Cluster** to color cells by their existing Leiden assignment.
 2. Select **Gene expression**, enter a gene symbol (for example, `PPBP`), and press **Run**. Any gene in `ad.var_names` can be requested; unknown genes return a visible error.
 3. Select **Quality metric** and choose one of the three available metrics: `n_genes`, `total_counts`, or `pct_mito`. The map updates on selection.
-4. Choose a cluster with the cluster picker. **Run cluster summary** fetches its top Wilcoxon-ranked genes and QC summary. Selecting a new cluster also refreshes the displayed summary.
+4. Choose a cluster with the cluster picker. **Run cluster summary** shows its precomputed top Wilcoxon-ranked genes (from `data/markers.json`) and its QC summary. Selecting a new cluster also refreshes the displayed summary.
 5. If a request fails, read the status message. For a failed map update, the last successful plot is retained and its caption explicitly says `Map not updated`; it should not be interpreted as the requested new coloring.
 
 The API includes `/api/umap`, `/api/expression/{gene}`, `/api/markers/{cluster}`, `/api/quality`, `/api/clusters`, and `/api/genes`.
@@ -92,7 +112,7 @@ These are cautious interpretations of the recorded Wilcoxon marker-ranking outpu
 | 3 | B-cell-like | `CD79A`, `MS4A1`, `CD74`, `HLA-DRA`, `CD79B` |
 | 4 | FCGR3A-positive monocyte-like | `LST1`, `FCGR3A`, `FCER1G`, `AIF1`, `COTL1` |
 | 5 | HLA-II-high antigen-presenting/dendritic-like | `HLA-DPA1`, `HLA-DRA`, `CD74`, `FCER1A` |
-| 6 | Platelet-associated transcript signal; precise identity unresolved | `GNG11`, `SDPR`, `PF4`, `PPBP`, `NRGN`; raw-count support also includes `GP9`, `ITGA2B` |
+| 6 | Platelet-associated transcript signal; precise identity unresolved | `GNG11`, `PF4`, `SDPR`, `PPBP`, `NRGN`; raw-count support also includes `GP9`, `ITGA2B` |
 | 7 | Small cluster; identity uncertain, with cytoskeletal and cell-cycle-associated genes | `ACTG1`, `CFL1`, `KIAA0101`, `STMN1` |
 
 ## Cluster 6 evidence, caveats, and next steps
@@ -112,13 +132,23 @@ python analyze_pbmc.py --data data/pbmc3k.h5ad --top-n 10
 
 This reads the existing AnnData data, summarizes metadata, missingness, cluster sizes and QC, ranks markers using the existing Leiden labels, and prints Cluster 6 raw-count marker detection. It does not recalculate the UMAP or clusters.
 
+To regenerate the marker file used by the app (only needed if the dataset or cluster labels change):
+
+```bash
+python generate_markers.py
+```
+
+This writes the top 50 Wilcoxon-ranked genes per existing Leiden cluster to `data/markers.json`. Commit the updated file if you redeploy.
+
 ## Testing and limitations
 
-Recorded checks include FastAPI TestClient checks for the home page, cluster/QC endpoints, cluster/gene/quality UMAP coloring, expression, marker ranking, gene lookup, and invalid gene/cluster responses; successful and expected 404 outcomes were observed. Cluster marker/QC summaries agreed on cell counts for clusters 4 (163) and 6 (13). Python compilation and inline JavaScript syntax parsing with Node were performed. The latest quality-metric dropdown and failed-request feedback code were checked for the three allowed options and expected error-caption logic. **Browser rendering, visual responsiveness, and manual interaction have not been verified.** The user should open the app in a browser and check all metric modes, cluster summary interactions, a valid gene, and invalid-gene feedback; also inspect a narrow/mobile viewport. These results describe the checks recorded during development and are not a claim of a fresh end-to-end run during publication preparation.
+Recorded checks during development include FastAPI TestClient checks for the home page, cluster/QC endpoints, cluster/gene/quality UMAP coloring, expression, gene lookup, and invalid gene/cluster responses; successful and expected 404 outcomes were observed. Cluster marker/QC summaries agreed on cell counts for clusters 4 (163) and 6 (13). Python compilation and inline JavaScript syntax parsing with Node were performed.
+
+After deployment, the app was also checked manually in a browser on Render: the `/api/clusters` endpoint returned all eight clusters, gene coloring (for example `PPBP`) rendered on the UMAP, and **Run cluster summary** displayed marker genes after the marker rankings were moved to the precomputed `data/markers.json` file. Not every metric mode, invalid-gene message, or a narrow/mobile viewport has been checked in a browser, so those should still be tried by anyone reviewing the app. The free Render instance sleeps when idle, so the first request after a pause can be slow.
 
 ## DDLS requirements and hand-in
 
-The Week 5 lab handout says **no separate written report is required**. The required deliverables are the working single-cell navigator and a GitHub repository with a clear README explaining what the app does, how to run it, and the answer to the owner's question. The README or app should identify the question cluster, its markers, and the cell type they point to. Submit the GitHub repository URL in the course portal along with the interview and Pi analysis transcripts. A report or GitHub Pages project page is optional. The live app tunnel is also optional and temporary.
+The Week 5 lab handout says **no separate written report is required**. The required deliverables are the working single-cell navigator and a GitHub repository with a clear README explaining what the app does, how to run it, and the answer to the owner's question. The README or app should identify the question cluster, its markers, and the cell type they point to. Submit the GitHub repository URL in the course portal along with the interview and Pi analysis transcripts. A report or GitHub Pages project page is optional. The live app link above is hosted on Render's free tier and may be slow to wake up.
 
 The interview transcript is included as `ddls-week5-interview.md`. `ddls-week5-pi-transcript.md` is the available edited Markdown export of the Pi conversation; it is not the full original session transcript. The course allows an analysis transcript as readable Markdown/text or raw Pi `.jsonl`. If submitting a transcript through the course portal, review the original session log for private information and use the format requested by the course; do not add raw session logs to this repository.
 
