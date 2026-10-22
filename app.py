@@ -170,26 +170,14 @@ def cluster_markers(cluster: str, top_n: int = Query(10, ge=1, le=50)):
     labels = ad.obs["leiden"].astype(str)
     if cluster not in set(labels):
         raise HTTPException(404, f"Unknown cluster: {cluster}")
-    key = "navigator_rank_genes_groups"
-    if key not in ad.uns:
-        with _data_lock:
-            if key not in ad.uns:
-                sc.tl.rank_genes_groups(ad, groupby="leiden", method="wilcoxon", use_raw=False, key_added=key)
-    try:
-        df = sc.get.rank_genes_groups_df(ad, group=cluster, key=key).head(top_n)
-    except Exception as exc:
-        raise HTTPException(500, f"Could not read marker results for group '{cluster}': {exc}")
-    genes = [
-        {
-            "gene": str(row["names"]),
-            "score": _json_value(row.get("scores")),
-            "p_value": _json_value(row.get("pvals")),
-            "adjusted_p_value": _json_value(row.get("pvals_adj")),
-            "log_fold_change": _json_value(row.get("logfoldchanges")),
-        }
-        for row in df.to_dict("records")
-    ]
-    return {"cluster": cluster, "n_cells": int((labels == cluster).sum()), "top_n": top_n, "markers": genes}
+    path = BASE_DIR / "data" / "markers.json"
+    if not path.is_file():
+        raise HTTPException(500, "data/markers.json not found. Run generate_markers.py")
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    genes = stored.get(cluster)
+    if genes is None:
+        raise HTTPException(500, f"No stored markers for cluster {cluster}")
+    return {"cluster": cluster, "n_cells": int((labels == cluster).sum()), "top_n": top_n, "markers": genes[:top_n]}
 
 
 @app.get("/api/quality")
