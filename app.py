@@ -44,7 +44,25 @@ def _json_value(value: Any):
         return int(value)
     if isinstance(value, (np.floating,)):
         return float(value) if np.isfinite(value) else None
+    if isinstance(value, np.generic):
+        return value.item()
     return value
+
+
+def _result_group_values(result: dict[str, Any], field: str, cluster: str):
+    """Read one group's values from Scanpy's structured recarray result."""
+    values = result.get(field)
+    if values is None:
+        return None
+    # Scanpy stores each field as a structured array with group names as dtype fields.
+    # Handle mapping-style results too for compatibility with serialized/older outputs.
+    if getattr(getattr(values, "dtype", None), "names", None):
+        if cluster not in values.dtype.names:
+            return None
+        return values[cluster]
+    if isinstance(values, dict):
+        return values.get(cluster)
+    return None
 
 
 def _plot_data(color: str):
@@ -140,10 +158,14 @@ def cluster_markers(cluster: str, top_n: int = Query(10, ge=1, le=50)):
             if key not in ad.uns:
                 sc.tl.rank_genes_groups(ad, groupby="leiden", method="wilcoxon", use_raw=False, key_added=key)
     result = ad.uns[key]
-    names = result["names"][cluster][:top_n]
-    def optional_array(name):
-        return result.get(name, {}).get(cluster) if isinstance(result.get(name), dict) else None
-    scores, pvals, p_adj, logfc = (optional_array(field) for field in ("scores", "pvals", "pvals_adj", "logfoldchanges"))
+    names = _result_group_values(result, "names", cluster)
+    if names is None:
+        raise HTTPException(500, f"Marker results are missing group '{cluster}'")
+    names = names[:top_n]
+    scores, pvals, p_adj, logfc = (
+        _result_group_values(result, field, cluster)
+        for field in ("scores", "pvals", "pvals_adj", "logfoldchanges")
+    )
     genes = []
     for i, name in enumerate(names):
         genes.append({
